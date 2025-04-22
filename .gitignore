@@ -1,0 +1,28 @@
+﻿# Build Folders (Quan trọng nhất!)
+[Bb]in/
+[Oo]bj/
+
+# Visual Studio User Settings
+*.user
+*.suo
+.vs/
+
+# Rider Settings
+.idea/
+
+# Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+artifacts/
+
+# Nuget Packages
+packages/
+*.nupkg
+
+# Other common ignores
+*.vspscc
+*.vssscc
+*.bak
+Thumbs.db
