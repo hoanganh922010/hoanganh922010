@@ -3,7 +3,7 @@ using System.Windows.Forms;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Edge; // Hoặc Chrome nếu bạn cài chromedriver.exe
 using OpenQA.Selenium.Support.UI;
-using SeleniumExtras.WaitHelpers; // <<< CẦN CÀI NUGET PACKAGE 'DotNetSeleniumExtras.WaitHelpers'
+using SeleniumExtras.WaitHelpers;
 using System.Text.RegularExpressions;
 using System.Collections.Generic;
 using System.Drawing;
@@ -11,7 +11,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.IO;
 using System.Threading;
-using System.Text; // Thêm vào để dùng StringBuilder
+using System.Text;
 
 namespace TTVUploaderApp
 {
@@ -224,7 +224,6 @@ namespace TTVUploaderApp
                             }
                             else
                             {
-                                MessageBox.Show("Không tìm thấy định dạng chương hợp lệ ('Chương X:') trong nội dung.", "Không Tìm Thấy Chương", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                             }
                         }
                         catch (Exception uiEx)
@@ -252,43 +251,189 @@ namespace TTVUploaderApp
             List<string> initialChapters = new List<string>();
             if (string.IsNullOrWhiteSpace(text)) return new ChapterAnalysisResult();
 
-            var chapterTitleRegex = new Regex(@"^\s*[Cc]hương\s+(\d+)\s*:?\s*(.*)$", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+            var chapterTitleRegex = new Regex(@"^\s*[Cc]hương\s+(\d+)\s*:?\s*(.*)$", RegexOptions.IgnoreCase);
             string[] lines = text.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+
             List<string> currentChapterLines = new List<string>();
-            bool foundFirstChapter = false;
+            bool isInsideChapter = false;
+            Match? previousTitleMatch = null;
+            bool chapterHadContent = false;
 
-            foreach (string line in lines)
-            {
-                string trimmedLine = line.Trim();
-                bool isTitle = chapterTitleRegex.IsMatch(trimmedLine);
 
-                if (isTitle)
+            Action finalizePreviousChapter = () => {
+                if (currentChapterLines.Count > 0 && isInsideChapter)
                 {
-                    if (foundFirstChapter && currentChapterLines.Count > 0)
+                    string firstLine = currentChapterLines[0];
+                    Match originalLineMatch = chapterTitleRegex.Match(firstLine);
+
+                    if (originalLineMatch.Success && originalLineMatch.Groups.Count > 2)
                     {
-                        initialChapters.Add(string.Join(Environment.NewLine, currentChapterLines).Trim());
+                        string titleTextGroupValue = originalLineMatch.Groups[2].Value; // Lấy cả khoảng trắng đầu/cuối nếu có
+
+
+                        int firstLetterIndex = -1;
+                        char firstLetter = '\0';
+                        for (int k = 0; k < titleTextGroupValue.Length; k++)
+                        {
+                            if (!char.IsWhiteSpace(titleTextGroupValue[k]))
+                            {
+                                firstLetterIndex = k;
+                                firstLetter = titleTextGroupValue[k];
+                                break;
+                            }
+                        }
+
+                        if (firstLetterIndex != -1 && char.IsLower(firstLetter))
+                        {
+                            char[] titleChars = titleTextGroupValue.ToCharArray();
+                            titleChars[firstLetterIndex] = char.ToUpper(firstLetter);
+                            string capitalizedTitleText = new string(titleChars);
+
+                            string prefixPart = firstLine.Substring(0, originalLineMatch.Groups[2].Index);
+                            string newFirstLine = prefixPart + capitalizedTitleText;
+                            currentChapterLines[0] = newFirstLine;
+                        }
                     }
-                    currentChapterLines = new List<string> { line };
-                    foundFirstChapter = true;
+                    initialChapters.Add(string.Join(Environment.NewLine, currentChapterLines).Trim());
                 }
-                else if (foundFirstChapter)
+            };
+
+
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i];
+                string trimmedLine = line.Trim();
+                Match currentTitleMatch = chapterTitleRegex.Match(trimmedLine);
+
+                if (currentTitleMatch.Success)
                 {
-                    currentChapterLines.Add(line);
+                    int currentNum = 0;
+                    if (!int.TryParse(currentTitleMatch.Groups[1].Value, out currentNum))
+                    {
+                        if (isInsideChapter) { currentChapterLines.Add(line); chapterHadContent = true; }
+                        continue;
+                    }
+
+                    string currentTitleText = currentTitleMatch.Groups[2].Value.Trim();
+                    bool currentHasText = !string.IsNullOrWhiteSpace(currentTitleText);
+                    bool isNewChapter = true; // Giả định là chương mới ban đầu
+
+                    if (previousTitleMatch != null)
+                    {
+                        int previousNum = 0;
+                        int.TryParse(previousTitleMatch.Groups[1].Value, out previousNum);
+                        string previousTitleText = previousTitleMatch.Groups[2].Value.Trim();
+                        bool previousHasText = !string.IsNullOrWhiteSpace(previousTitleText);
+
+                        if (!chapterHadContent && currentNum == previousNum + 1)
+                        {
+                            isNewChapter = true;
+                        }
+                        else if (currentNum == previousNum)
+                        {
+                            if (currentHasText && !previousHasText && currentChapterLines.Count > 0)
+                            {
+                                currentChapterLines[0] = line;
+                                previousTitleMatch = chapterTitleRegex.Match(line);
+
+                            }
+                            isNewChapter = false; 
+                        }
+                        else if (currentHasText && previousHasText
+                                 && currentTitleText.Equals(previousTitleText, StringComparison.OrdinalIgnoreCase)
+                                 && chapterHadContent)
+                        {
+                            currentChapterLines.Add(line);
+                            chapterHadContent = true;
+                            isNewChapter = false;
+                        }
+                        else
+                        {
+                            isNewChapter = true;
+                        }
+                    }
+                    else
+                    {
+                        isNewChapter = true;
+                    }
+
+                    if (isNewChapter)
+                    {
+                        finalizePreviousChapter();
+                        currentChapterLines = new List<string> { line };
+                        chapterHadContent = false;
+                        isInsideChapter = true;
+                        previousTitleMatch = chapterTitleRegex.Match(line);
+                    }
+                }
+                else 
+                {
+                    if (isInsideChapter)
+                    {
+                        // if(!string.IsNullOrWhiteSpace(line))
+                        // {
+                        currentChapterLines.Add(line);
+                        if (currentChapterLines.Count > 1) // Chỉ đánh dấu khi có ít nhất 1 dòng sau dòng tiêu đề
+                        {
+                            chapterHadContent = true;
+                        }
+                        // }
+                    }
                 }
             }
 
-            if (currentChapterLines.Count > 0 && foundFirstChapter)
+            finalizePreviousChapter();
+
+            List<string> finalInitialChapters = new List<string>();
+            foreach (string chapter in initialChapters) // Dùng initialChapters đã qua bước viết hoa
             {
-                initialChapters.Add(string.Join(Environment.NewLine, currentChapterLines).Trim());
+                if (string.IsNullOrWhiteSpace(chapter)) continue;
+
+                string[] chapterLines = chapter.Split(new[] { Environment.NewLine }, StringSplitOptions.None);
+                string firstLine = chapterLines[0];
+                Match firstLineMatch = chapterTitleRegex.Match(firstLine.Trim()); // Match để kiểm tra
+
+                if (firstLineMatch.Success)
+                {
+                    string titleTextPart = firstLineMatch.Groups.Count > 2 ? firstLineMatch.Groups[2].Value.Trim() : "";
+                    // Kiểm tra xem có tên chương không VÀ chưa phải là "Vô đề" được thêm tự động
+                    if (string.IsNullOrWhiteSpace(titleTextPart) && !firstLine.Contains(": Vô đề"))
+                    {
+
+                        string chapterTitleLinePart = firstLine.Split(':')[0].TrimEnd();
+
+                        Match numPartMatch = Regex.Match(firstLine, @"^\s*[Cc]hương\s+\d+");
+                        if (numPartMatch.Success)
+                            chapterTitleLinePart = numPartMatch.Value;
+                        else
+                            chapterTitleLinePart = firstLine.TrimEnd(); // Fallback
+
+                        string modifiedChapter = chapterTitleLinePart + ": Vô đề"; // Thêm tiêu đề mặc định
+                        if (chapterLines.Length > 1)
+                        {
+                            modifiedChapter += Environment.NewLine + string.Join(Environment.NewLine, chapterLines.Skip(1));
+                        }
+                        finalInitialChapters.Add(modifiedChapter);
+                    }
+                    else
+                    {
+                        finalInitialChapters.Add(chapter); // Giữ nguyên chương đã có tiêu đề (và đã viết hoa nếu cần)
+                    }
+                }
+                else
+                {
+                    finalInitialChapters.Add(chapter); // Không khớp định dạng tiêu đề
+                }
             }
 
-            if (initialChapters.Count == 0)
+
+            if (finalInitialChapters.Count == 0)
             {
-                Console.WriteLine("Không tìm thấy chương nào theo định dạng 'Chương X:'.");
+                MessageBox.Show("Không thể tách được chương nào từ nội dung đã cung cấp.", "Không Tách Được Chương", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return new ChapterAnalysisResult();
             }
 
-            return ProcessLongChapters(initialChapters, 38000, 3000);
+            return ProcessLongChapters(finalInitialChapters, 38000, 3000);
         }
 
         private ChapterAnalysisResult ProcessLongChapters(List<string> originalChapters, int maxCharCount, int minCharCount)
@@ -629,10 +774,13 @@ namespace TTVUploaderApp
 
                     using (driver = new EdgeDriver(service, options))
                     {
-                        var standardWait = new WebDriverWait(driver, TimeSpan.FromSeconds(1000));
-                        var pageLoadWait = new WebDriverWait(driver, TimeSpan.FromSeconds(1000));
-                        var submitWait = new WebDriverWait(driver, TimeSpan.FromSeconds(1000));
+                        driver.Manage().Timeouts().PageLoad = TimeSpan.FromSeconds(90);
 
+                        var standardWait = new WebDriverWait(driver, TimeSpan.FromSeconds(25));
+                        var pageLoadWait = new WebDriverWait(driver, TimeSpan.FromSeconds(60));
+                        var submitWait = new WebDriverWait(driver, TimeSpan.FromSeconds(90));
+
+                        // 1. Mở trang chủ trước
                         string homePageUrl = "https://tangthuvien.net/";
                         UpdateStatus("Đang mở trang chủ TTV (.net)...");
                         try
@@ -640,28 +788,15 @@ namespace TTVUploaderApp
                             driver.Navigate().GoToUrl(homePageUrl);
                             pageLoadWait.Until(ExpectedConditions.ElementIsVisible(By.TagName("body")));
                         }
-                        catch (WebDriverTimeoutException pageEx)
-                        {
-                            UpdateStatus($"Lỗi: Timeout ({driver.Manage().Timeouts().PageLoad.TotalSeconds}s) khi tải trang chủ TTV.");
-                            MessageBox.Show($"Không thể tải trang chủ TTV sau {driver.Manage().Timeouts().PageLoad.TotalSeconds} giây:\n{homePageUrl}\nLỗi: {pageEx.Message}", "Lỗi Tải Trang Chủ", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                            errorOccurred = true;
-                            return;
-                        }
-                        catch (WebDriverException driverEx)
-                        {
-                            UpdateStatus($"Lỗi WebDriver khi mở trang chủ: {driverEx.Message}");
-                            MessageBox.Show($"Đã xảy ra lỗi khi mở trang chủ TTV:\n{homePageUrl}\nLỗi: {driverEx.Message}", "Lỗi Mở Trang Chủ", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                            errorOccurred = true;
-                            return;
-                        }
+                        catch (WebDriverTimeoutException pageEx) { UpdateStatus($"Lỗi: Timeout ({driver.Manage().Timeouts().PageLoad.TotalSeconds}s) khi tải trang chủ TTV."); MessageBox.Show($"Không thể tải trang chủ TTV sau {driver.Manage().Timeouts().PageLoad.TotalSeconds} giây:\n{homePageUrl}\nLỗi: {pageEx.Message}", "Lỗi Tải Trang Chủ", MessageBoxButtons.OK, MessageBoxIcon.Error); errorOccurred = true; return; }
+                        catch (WebDriverException driverEx) { UpdateStatus($"Lỗi WebDriver khi mở trang chủ: {driverEx.Message}"); MessageBox.Show($"Đã xảy ra lỗi khi mở trang chủ TTV:\n{homePageUrl}\nLỗi: {driverEx.Message}", "Lỗi Mở Trang Chủ", MessageBoxButtons.OK, MessageBoxIcon.Error); errorOccurred = true; return; }
 
                         UpdateStatus("VUI LÒNG ĐĂNG NHẬP vào TTV trong cửa sổ trình duyệt (nếu chưa)...");
-                        MessageBox.Show("Trình duyệt Edge đã mở trang chủ TTV...\n\nVui lòng đăng nhập vào tài khoản TTV của bạn.\n\nSau khi đăng nhập xong, ứng dụng sẽ tự động tiếp tục khi bạn nhấn OK trên hộp thoại này.",
-                                        "Yêu cầu Đăng nhập Thủ công", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        MessageBox.Show("Trình duyệt Edge đã mở trang chủ TTV...\n\nVui lòng đăng nhập vào tài khoản TTV của bạn.\n\nSau khi đăng nhập xong, ứng dụng sẽ tự động tiếp tục khi bạn nhấn OK trên hộp thoại này.", "Yêu cầu Đăng nhập Thủ công", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
-                        UpdateStatus("Đang chờ xác nhận đã đăng nhập...");
+                        UpdateStatus("Đang chờ xác nhận từ bạn...");
 
-                        UpdateStatus("Đang thử truy cập trang đăng chương của truyện...");
+                        UpdateStatus($"Đang chuyển đến trang đăng chương: {storyUploadUrl}...");
                         string firstChapterNameSelector = "input[name='chap_name[1]']";
                         try
                         {
@@ -671,39 +806,9 @@ namespace TTVUploaderApp
                             UpdateStatus("Truy cập trang đăng chương thành công! Bắt đầu đăng...");
                             await Task.Delay(500);
                         }
-                        catch (WebDriverTimeoutException timeEx)
-                        {
-                            if (driver.Url.Equals(storyUploadUrl, StringComparison.OrdinalIgnoreCase))
-                            {
-                                UpdateStatus($"Lỗi: Timeout ({standardWait.Timeout.TotalSeconds}s) khi chờ element '{firstChapterNameSelector}'.");
-                                MessageBox.Show($"Không thể tìm thấy phần tử '{firstChapterNameSelector}' trên trang đăng chương sau {standardWait.Timeout.TotalSeconds} giây:\n{storyUploadUrl}\n\nLý do có thể:\n- Chưa đăng nhập thành công / Session hết hạn.\n- Sai URL (nhưng trang vẫn tải được phần nào).\n- Trang web TTV đã thay đổi cấu trúc.\n\nChi tiết lỗi: {timeEx.Message}",
-                                                "Lỗi Tìm Phần Tử Trang Đăng Chương", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                            }
-                            else
-                            {
-                                UpdateStatus($"Lỗi: Timeout ({driver.Manage().Timeouts().PageLoad.TotalSeconds}s) khi tải trang đăng chương.");
-                                MessageBox.Show($"Không thể tải hoàn tất trang đăng chương sau {driver.Manage().Timeouts().PageLoad.TotalSeconds} giây:\n{storyUploadUrl}\nLý do có thể:\n- URL sai.\n- Lỗi mạng.\n- Lỗi server TTV.\n\nChi tiết lỗi: {timeEx.Message}",
-                                                "Lỗi Tải Trang Đăng Chương", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                            }
-                            errorOccurred = true;
-                            return;
-                        }
-                        catch (WebDriverException driverEx)
-                        {
-                            UpdateStatus($"Lỗi WebDriver khi truy cập trang đăng chương: {driverEx.Message}");
-                            MessageBox.Show($"Lỗi khi truy cập trang đăng chương:\n{storyUploadUrl}\n\nChi tiết lỗi: {driverEx.Message}",
-                                            "Lỗi Truy Cập Trang Đăng Chương", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                            errorOccurred = true;
-                            return;
-                        }
-                        catch (Exception ex)
-                        {
-                            UpdateStatus("Lỗi không xác định khi truy cập trang đăng chương.");
-                            MessageBox.Show($"Đã xảy ra lỗi không mong muốn khi truy cập trang đăng chương:\n{storyUploadUrl}\n\nChi tiết lỗi: {ex.Message}",
-                                            "Lỗi Không Xác Định", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                            errorOccurred = true;
-                            return;
-                        }
+                        catch (WebDriverTimeoutException timeEx) { if (driver.Url.Contains(storyUploadUrl)) { UpdateStatus($"Lỗi: Timeout ({standardWait.Timeout.TotalSeconds}s) khi chờ element '{firstChapterNameSelector}' trên trang đăng chương."); MessageBox.Show($"Không thể tìm thấy phần tử '{firstChapterNameSelector}' trên trang đăng chương sau {standardWait.Timeout.TotalSeconds} giây:\n{storyUploadUrl}\n\nLý do có thể:\n- Đăng nhập chưa thành công / Session hết hạn khi chuyển trang.\n- URL đúng nhưng trang tải lỗi hoặc cấu trúc thay đổi.\n\nChi tiết lỗi: {timeEx.Message}", "Lỗi Tìm Phần Tử Trang Đăng Chương", MessageBoxButtons.OK, MessageBoxIcon.Error); } else { UpdateStatus($"Lỗi: Timeout ({driver.Manage().Timeouts().PageLoad.TotalSeconds}s) khi tải trang đăng chương."); MessageBox.Show($"Không thể tải hoàn tất trang đăng chương sau {driver.Manage().Timeouts().PageLoad.TotalSeconds} giây:\n{storyUploadUrl}\nLý do có thể:\n- URL sai.\n- Lỗi mạng / Server TTV.\n- Cần đăng nhập lại nhưng bị lỗi.\n\nChi tiết lỗi: {timeEx.Message}", "Lỗi Tải Trang Đăng Chương", MessageBoxButtons.OK, MessageBoxIcon.Error); } errorOccurred = true; return; }
+                        catch (WebDriverException driverEx) { UpdateStatus($"Lỗi WebDriver khi truy cập trang đăng chương: {driverEx.Message}"); MessageBox.Show($"Lỗi khi truy cập trang đăng chương:\n{storyUploadUrl}\n\nChi tiết lỗi: {driverEx.Message}", "Lỗi Truy Cập Trang Đăng Chương", MessageBoxButtons.OK, MessageBoxIcon.Error); errorOccurred = true; return; }
+                        catch (Exception ex) { UpdateStatus("Lỗi không xác định khi truy cập trang đăng chương."); MessageBox.Show($"Đã xảy ra lỗi không mong muốn khi truy cập trang đăng chương:\n{storyUploadUrl}\n\nChi tiết lỗi: {ex.Message}", "Lỗi Không Xác Định", MessageBoxButtons.OK, MessageBoxIcon.Error); errorOccurred = true; return; }
 
                         while (remainingChapters.Count > 0 && !errorOccurred)
                         {
@@ -721,10 +826,9 @@ namespace TTVUploaderApp
                                 string content = parts.Length > 1 ? parts[1].Trim() : "";
                                 string chuongSo = ExtractChapterNumber(originalTitleLine);
                                 string tenChuongToSend = ExtractChapterTitleOnly(originalTitleLine);
-                                if (string.IsNullOrWhiteSpace(tenChuongToSend)) { tenChuongToSend = $"Chương {chuongSo}"; UpdateStatus($"Cảnh báo: Dùng tên mặc định '{tenChuongToSend}'."); }
                                 string quyenSo = "1";
 
-                                UpdateStatus($"Đang điền chương {totalChaptersPosted + i + 1}/{totalChaptersAtStart}: {tenChuongToSend.Substring(0, Math.Min(50, tenChuongToSend.Length))}...");
+                                UpdateStatus($"Đang điền chương {totalChaptersPosted + i + 1}/{totalChaptersAtStart}: {originalTitleLine.Substring(0, Math.Min(60, originalTitleLine.Length))}...");
 
                                 try
                                 {
@@ -752,22 +856,10 @@ namespace TTVUploaderApp
                                             UpdateStatus($"Đã thêm form index {formIndex + 1}.");
                                             await Task.Delay(300);
                                         }
-                                        catch (Exception addEx)
-                                        {
-                                            UpdateStatus($"Lỗi khi nhấn nút 'Thêm chương' (ID: add-chap): {addEx.Message}");
-                                            MessageBox.Show($"Lỗi khi click nút 'Thêm chương' (ID: add-chap) sau khi điền form index {formIndex}.\nKiểm tra lại ID của nút hoặc cấu trúc trang.\n\nLỗi: {addEx.Message}", "Lỗi Thêm Form", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                                            errorOccurred = true;
-                                            break;
-                                        }
+                                        catch (Exception addEx) { UpdateStatus($"Lỗi khi nhấn nút 'Thêm chương' (ID: add-chap): {addEx.Message}"); MessageBox.Show($"Lỗi khi click nút 'Thêm chương' (ID: add-chap) sau khi điền form index {formIndex}.\nKiểm tra lại ID của nút hoặc cấu trúc trang.\n\nLỗi: {addEx.Message}", "Lỗi Thêm Form", MessageBoxButtons.OK, MessageBoxIcon.Error); errorOccurred = true; break; }
                                     }
                                 }
-                                catch (Exception fillEx)
-                                {
-                                    UpdateStatus($"Lỗi điền thông tin chương {totalChaptersPosted + i + 1}: {fillEx.Message}");
-                                    MessageBox.Show($"Lỗi khi điền thông tin cho chương '{tenChuongToSend}' (form index {formIndex}).\nKiểm tra lại các selector `name` hoặc cấu trúc trang.\n\nLỗi: {fillEx.Message}", "Lỗi Điền Thông Tin", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                                    errorOccurred = true;
-                                    break;
-                                }
+                                catch (Exception fillEx) { UpdateStatus($"Lỗi điền thông tin chương {totalChaptersPosted + i + 1}: {fillEx.Message}"); MessageBox.Show($"Lỗi khi điền thông tin cho chương '{originalTitleLine}' (form index {formIndex}).\nKiểm tra lại các selector `name` hoặc cấu trúc trang.\n\nLỗi: {fillEx.Message}", "Lỗi Điền Thông Tin", MessageBoxButtons.OK, MessageBoxIcon.Error); errorOccurred = true; break; }
                             }
 
                             if (errorOccurred) break;
@@ -791,17 +883,7 @@ namespace TTVUploaderApp
                                     standardWait.Until(ExpectedConditions.ElementIsVisible(By.CssSelector(firstChapterNameSelector)));
                                     UpdateStatus("Sẵn sàng cho lô tiếp theo.");
                                 }
-                                catch (Exception waitLinkEx)
-                                {
-                                    UpdateStatus($"Lỗi chờ/nhấn link '{themChuongLinkSelector}' sau khi submit: {waitLinkEx.Message}.");
-                                    MessageBox.Show($"Đã gửi lô {currentBatchNumber} nhưng không thể tự động quay lại trang thêm chương mới (không tìm thấy link '{themChuongLinkSelector}').\nTiến trình sẽ dừng lại.\n\nLỗi: {waitLinkEx.Message}", "Lỗi Sau Submit", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                                    errorOccurred = true;
-                                    if (mainAppForm != null) mainAppForm.RemovePostedChapters(batchSize);
-                                    totalChaptersPosted += batchSize;
-                                    UpdateProgress(totalChaptersPosted);
-                                    remainingChapters.RemoveRange(0, batchSize);
-                                    break;
-                                }
+                                catch (Exception waitLinkEx) { UpdateStatus($"Lỗi chờ/nhấn link '{themChuongLinkSelector}' sau khi submit: {waitLinkEx.Message}."); MessageBox.Show($"Đã gửi lô {currentBatchNumber} nhưng không thể tự động quay lại trang thêm chương mới (không tìm thấy link '{themChuongLinkSelector}').\nTiến trình sẽ dừng lại.\n\nLỗi: {waitLinkEx.Message}", "Lỗi Sau Submit", MessageBoxButtons.OK, MessageBoxIcon.Warning); errorOccurred = true; if (mainAppForm != null) mainAppForm.RemovePostedChapters(batchSize); totalChaptersPosted += batchSize; UpdateProgress(totalChaptersPosted); remainingChapters.RemoveRange(0, batchSize); break; }
 
                                 if (mainAppForm != null) mainAppForm.RemovePostedChapters(batchSize);
                                 totalChaptersPosted += batchSize;
@@ -809,13 +891,7 @@ namespace TTVUploaderApp
                                 remainingChapters.RemoveRange(0, batchSize);
                                 if (remainingChapters.Count > 0) { UpdateStatus($"Chờ 1.5 giây trước khi bắt đầu lô tiếp theo..."); await Task.Delay(1500); }
                             }
-                            catch (Exception submitEx)
-                            {
-                                UpdateStatus($"Lỗi khi gửi lô {currentBatchNumber}: {submitEx.Message}");
-                                MessageBox.Show($"Lỗi khi nhấn nút Submit cho lô {currentBatchNumber}.\nKiểm tra lại selector của nút Submit hoặc lỗi từ phía server.\n\nLỗi: {submitEx.Message}", "Lỗi Submit", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                                errorOccurred = true;
-                                break;
-                            }
+                            catch (Exception submitEx) { UpdateStatus($"Lỗi khi gửi lô {currentBatchNumber}: {submitEx.Message}"); MessageBox.Show($"Lỗi khi nhấn nút Submit cho lô {currentBatchNumber}.\nKiểm tra lại selector của nút Submit hoặc lỗi từ phía server.\n\nLỗi: {submitEx.Message}", "Lỗi Submit", MessageBoxButtons.OK, MessageBoxIcon.Error); errorOccurred = true; break; }
                         }
 
                         if (!errorOccurred)
@@ -827,43 +903,20 @@ namespace TTVUploaderApp
                         {
                             UpdateStatus($"Đã dừng do lỗi. {totalChaptersPosted}/{totalChaptersAtStart} chương đã được xử lý trước khi lỗi.");
                         }
-                    }
+                    } 
                     driver = null;
                 }
                 catch (Exception ex)
                 {
                     errorOccurred = true;
-                    if (ex.Message.Contains("driver executable file does not exist") || ex.Message.ToLower().Contains("msedgedriver"))
-                    {
-                        UpdateStatus("Lỗi: Không tìm thấy msedgedriver.exe.");
-                        MessageBox.Show("Lỗi khởi tạo trình duyệt Edge:\nKhông tìm thấy tệp 'msedgedriver.exe'.\n\nVui lòng tải phiên bản msedgedriver phù hợp với trình duyệt Edge của bạn và đặt nó vào cùng thư mục với ứng dụng hoặc trong một thư mục thuộc biến môi trường PATH.", "Lỗi Driver", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    }
-                    else if (ex is WebDriverException && ex.Message.ToLower().Contains("session not created"))
-                    {
-                        UpdateStatus("Lỗi: Không thể tạo phiên WebDriver.");
-                        MessageBox.Show($"Lỗi khởi tạo trình duyệt Edge:\nKhông thể tạo phiên làm việc WebDriver.\nLý do có thể:\n- Phiên bản msedgedriver không tương thích với trình duyệt Edge hiện tại.\n- Có lỗi với cài đặt trình duyệt Edge.\n\nChi tiết: {ex.Message}", "Lỗi Khởi Tạo Session", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    }
-                    else
-                    {
-                        UpdateStatus($"Lỗi không mong muốn trong quá trình tự động hóa: {ex.Message}");
-                        MessageBox.Show($"Đã xảy ra lỗi không mong muốn:\n{ex.Message}\n\n{ex.StackTrace}", "Lỗi Nghiêm Trọng", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    }
+                    if (ex.Message.Contains("driver executable file does not exist") || ex.Message.ToLower().Contains("msedgedriver")) { UpdateStatus("Lỗi: Không tìm thấy msedgedriver.exe."); MessageBox.Show("Lỗi khởi tạo trình duyệt Edge:\nKhông tìm thấy tệp 'msedgedriver.exe'.\n\nVui lòng tải phiên bản msedgedriver phù hợp với trình duyệt Edge của bạn và đặt nó vào cùng thư mục với ứng dụng hoặc trong một thư mục thuộc biến môi trường PATH.", "Lỗi Driver", MessageBoxButtons.OK, MessageBoxIcon.Error); } else if (ex is WebDriverException && ex.Message.ToLower().Contains("session not created")) { UpdateStatus("Lỗi: Không thể tạo phiên WebDriver."); MessageBox.Show($"Lỗi khởi tạo trình duyệt Edge:\nKhông thể tạo phiên làm việc WebDriver.\nLý do có thể:\n- Phiên bản msedgedriver không tương thích với trình duyệt Edge hiện tại.\n- Có lỗi với cài đặt trình duyệt Edge.\n\nChi tiết: {ex.Message}", "Lỗi Khởi Tạo Session", MessageBoxButtons.OK, MessageBoxIcon.Error); } else { UpdateStatus($"Lỗi không mong muốn trong quá trình tự động hóa: {ex.Message}"); MessageBox.Show($"Đã xảy ra lỗi không mong muốn:\n{ex.Message}\n\n{ex.StackTrace}", "Lỗi Nghiêm Trọng", MessageBoxButtons.OK, MessageBoxIcon.Error); }
                 }
                 finally
                 {
-                    if (driver != null)
-                    {
-                        try { driver.Quit(); } catch { }
-                        driver = null;
-                    }
-                    if (service != null)
-                    {
-                        try { service.Dispose(); } catch { }
-                    }
+                    if (driver != null) { try { driver.Quit(); } catch { } driver = null; }
+                    if (service != null) { try { service.Dispose(); } catch { } }
                     SetControlsEnabled(true);
-                    string finalStatus = errorOccurred
-                        ? $"Đã dừng do lỗi. {totalChaptersPosted}/{totalChaptersAtStart} chương đã xử lý."
-                        : $"Hoàn tất. {totalChaptersPosted}/{totalChaptersAtStart} chương đã xử lý.";
+                    string finalStatus = errorOccurred ? $"Đã dừng do lỗi. {totalChaptersPosted}/{totalChaptersAtStart} chương đã xử lý." : $"Hoàn tất. {totalChaptersPosted}/{totalChaptersAtStart} chương đã xử lý.";
                     UpdateStatus(finalStatus);
                     UpdateProgress(totalChaptersPosted);
                 }
@@ -889,28 +942,33 @@ namespace TTVUploaderApp
         private static string ExtractChapterTitleOnly(string titleLine)
         {
             if (string.IsNullOrWhiteSpace(titleLine)) return "";
+
+            // Regex tìm tên chương sau "Chương X:" hoặc "Chương X "
             Match match = Regex.Match(titleLine.Trim(), @"^[Cc]hương\s+\d+\s*[:\s]\s*(.*)$", RegexOptions.IgnoreCase);
+
             if (match.Success && match.Groups.Count > 1 && !string.IsNullOrWhiteSpace(match.Groups[1].Value))
             {
-                return match.Groups[1].Value.Trim();
+                string titlePart = match.Groups[1].Value.Trim();
+
+                if (titlePart.Equals("Vô đề", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "";
+                }
+                return titlePart;
             }
-            return titleLine.Trim();
+            Match voDeMatch = Regex.Match(titleLine.Trim(), @"^[Cc]hương\s+\d+\s*:\s*Vô\s+đề$", RegexOptions.IgnoreCase);
+            if (voDeMatch.Success)
+            {
+                return "";
+            }
+
+            return "";
         }
+
 
         private void FormAutomation_FormClosing(object? sender, FormClosingEventArgs e)
         {
-            try
-            {
-                if (driver != null)
-                {
-                    driver.Quit();
-                    driver = null;
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Lỗi khi đóng WebDriver: {ex.Message}");
-            }
+            try { if (driver != null) { driver.Quit(); driver = null; } } catch (Exception ex) { Console.WriteLine($"Lỗi khi đóng WebDriver: {ex.Message}"); }
         }
     }
 
@@ -1020,7 +1078,6 @@ namespace TTVUploaderApp
             }
         }
     }
-
     public static class SeleniumExtensions
     {
         public static void ClearSendKeys(this IWebElement element, string text)
