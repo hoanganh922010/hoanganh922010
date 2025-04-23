@@ -13,10 +13,8 @@ using System.IO;
 using System.Threading;
 using System.Text; // Thêm vào để dùng StringBuilder
 
-// Namespace chung (Giữ lại TTVUploaderApp như ban đầu)
 namespace TTVUploaderApp
 {
-    // --- Class để chứa kết quả phân tích sau khi tách chương ---
     public class ChapterAnalysisResult
     {
         public List<string> FinalChapters { get; set; } = new List<string>();
@@ -26,7 +24,6 @@ namespace TTVUploaderApp
         public int FinalChapterCount => FinalChapters.Count;
     }
 
-    // --- Class Form Chính (TTV) ---
     public partial class TTV : Form
     {
         private TextBox? txtNoiDung;
